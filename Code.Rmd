@@ -1,0 +1,309 @@
+---
+title: "MLB Attendance, Home Field Advantage, and Batting Performance"
+author: "Ethan Rubenstein"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Entire file takes ~2mins to run
+
+# Read in original Retrosheet dataset and Stadium dataset, which includes attendance figures and stadium cap respectively
+```{r cars}
+library(tidyverse) 
+# Read in 2022 Retrosheet game log which includes attendance -- https://www.retrosheet.org/gamelogs/index.html
+mlb <- read.csv("gl2022.txt", header = FALSE)
+mlb = mlb[!is.na(mlb$V18),]
+mlb = mlb[!(mlb$V18 == 0),]
+mlb = mlb[order(mlb$V18),]
+
+# Read in stadium data with capacity from http://www.stadiumdude.com/mlb-stadium-data/ 
+stadiums <- read.csv("stadiumdata.txt", sep="\t", header = TRUE)
+
+# Remove digit group commas from stadium capacity variable and add stadium capacity to Retrosheet dataset based on stadium code
+mlb$stadium_cap = as.numeric(gsub(",", "", stadiums$Capacity[match(mlb$V17, stadiums$Code)]))
+mlb = mlb[!is.na(mlb$stadium_cap),]
+# Calculate attendance proportion ( attendance / stadium capacity)
+mlb$attend_prop = mlb$V18/mlb$stadium_cap
+# Change the date format to yyyy-dd-mm to match baseballr pitch-by-pitch data for seamless merge
+mlb$V1 = gsub("(\\d{4})(\\d{2})(\\d{2})$","\\1-\\2-\\3", mlb$V1)
+# Create new dataframe extracting only relevant attendance and game data
+clean_mlb = mlb[c("V1", "V4", "V7", "attend_prop", "V18", "stadium_cap","V17", "V2")]
+# Rename column headers for ease of use
+colnames(clean_mlb) = c("date", "visiting", "home", "attend_prop", "attendance", "stadium_cap", "code", "doubleheader")
+```
+
+# Scrape 2022 pitch data using  baseballr package 
+```{r}
+# No need to run this code, since the data has been written to file "2022data.csv"
+# Get 2022 pitch-by-pitch data, data borrowed from lecture 3 R code
+
+# library(baseballr)
+# year = 2022
+# temp_data = NULL
+# pitch_data = data.frame(matrix(ncol = 92, nrow = 0))
+# 
+# # Iterate through all possible months when an MLB game could be played
+# for(month in 3:3) {
+#   # Determine number of days in month
+#   if(month == 4 || month == 6 || month == 9 || month == 11) {
+#       max_day = 30
+#   } else {
+#       max_day = 31
+#      }
+#   
+#   # Iterate through all days in the current month
+#   for(day in 1:max_day) {
+#     if(month < 10) {
+#         m = paste("0", toString(month), sep = "")
+#     } else {
+#         m = toString(month)
+#     }
+#     
+#     if(day < 10) {
+#         d = paste("0",toString(day),sep="")
+#     } else {
+#         d = toString(day)
+#     }
+#     
+#     input_date = paste(toString(year), paste("-", paste(m, paste("-", d, sep=""), sep=""), sep=""), sep="")
+#     print(input_date)
+#     temp_data = try(scrape_statcast_savant(start_date = input_date, end_date = input_date))
+#     if(nrow(temp_data) > 0) {
+#         pitch_data = rbind(pitch_data, temp_data)
+#     }
+#   }
+# }
+
+
+# Write 2022 pitch-by-pitch to disk to avoid rerunning time-consuming code above
+# pitch_data
+# write.csv(pitch_data, "2022data.csv", row.names=TRUE)
+```
+
+# Read in 2022 pitch-by-pith data after
+```{r}
+# Read in 2022 pitch-by-pitch data
+data_2022 <- read.csv("2022data.csv", header = TRUE)
+```
+
+# Calculate RE24 for each at-bat
+```{r}
+# Get RE24 
+# Code taken from lecture 3 R code
+require(devtools)
+install_github("BillPetti/baseballr")
+require(baseballr)
+at_bat_data = run_expectancy_code(data_2022, level = "plate appearance")
+
+# Define events to be retained in calculation of wOBA
+plate_appearance_events = c("batter_interference", "double_play", "field_out", "fielders_choice", "fielders_choice_out", "force_out", "grounded_into_double_play", "sac_fly", "sac_fly_double_play", "triple_play", "field_error", "strikeout", "strikeout_double_play", "interf_def", "single", "double", "triple", "home_run", "walk", "hit_by_pitch")
+
+# Only select regular season at-bats
+at_bat_data = at_bat_data[which(at_bat_data$game_type == "R"), ]
+
+# Identify rows to be retained if the event for the at-bat is an event defined above
+indices = which(at_bat_data$events %in% plate_appearance_events)
+at_bat_data = at_bat_data[indices, ]
+
+at_bat_data = at_bat_data[order(at_bat_data$game_date),]
+
+```
+# Create attendance groups
+```{r}
+# Group games by attendance proportion 
+# Games above Q3 in attendance proportion --> 'high' attendance group
+# Games between median and Q3 in attendance proportion --> 'med-high' attendance group
+# Games between Q1 and median of attendance proportion --> 'med-low' attendance group
+# Games below Q1 of attendance proportion --> 'low' attendance group
+
+# Get Q1, median, Q3 for grouping
+attend_prop_sumstats = summary(clean_mlb$attend_prop)
+
+# Create groups
+clean_mlb$attend_group <- with(clean_mlb, ifelse(attend_prop >= attend_prop_sumstats[5], 'high',
+                         ifelse(attend_prop >= attend_prop_sumstats[3], 'med-high', ifelse(attend_prop >= attend_prop_sumstats[2], 'med-low', 'low'))))
+
+clean_mlb[order(clean_mlb$date),]
+
+```
+# Remove doubleheaders
+```{r}
+# Investigate and remove doubleheaders
+
+# Find all doubleheader games from 2022
+doubleheaders = mlb[mlb$V2 %in% c(1, 2),]
+# Game 1 doubleheaders
+doubleheaders = mlb[mlb$V2 %in% c(1),]
+# Game 2 doubleheaders
+doubleheaders = mlb[mlb$V2 %in% c(2),]
+# Order by date to see that some doubleheaders are missing game 1 
+doubleheaders = doubleheaders[order(doubleheaders$V1),]
+doubleheaders[c("V1", "V2", "V4", "V7", "attend_prop")]
+
+# CHA - CLE 4/20/2022 missing game 1 of doubleheader
+mlb[mlb$V1 == "2022-04-20" & mlb$V4 == "CHA" & mlb$V7 == "CLE",]
+# Original date for CHA - CLE 4/20/2022 game 1 was 4/19/2022 - does not exist in the dataset because it was recorded as having an attendance of 0
+mlb[mlb$V4 == "CHA" & mlb$V7 == "CLE",]
+# Similarly, Braves - Mets on 5/03/2022 is missing game 1, which was rescheduled from 4/04/2022
+mlb[mlb$V1 == "2022-05-03" & mlb$V4 == "ATL" & mlb$V7 == "NYN",]
+```
+# Make team abbreviations consistent between Retrosheet and at-bat datasets, so that games can be matched
+```{r}
+# Team abbreviations between the datasets are not the same as the unique() functions show
+sort(unique(clean_mlb$home), decreasing=TRUE)
+sort(unique(clean_mlb$visiting), decreasing=TRUE)
+
+sort(unique(at_bat_data$home_team), decreasing=TRUE)
+sort(unique(at_bat_data$away_team), decreasing=TRUE)
+# This function takes in the clean_mlb dataset and changes its abbreviations to match the pitch-by-pitch dataset
+replace_abbrev = function(df, old, new) {
+  for (x in 1:length(old)) {
+    df$visiting[df$visiting == old[x]] = new[x]
+    df$home[df$home == old[x]] = new[x]
+  }
+  return(df)
+}
+# Call the function with every abbreviation that needs to be changed, and what it needs to be changed to
+clean_mlb = replace_abbrev(clean_mlb, c("NYN", "WAS", "TBA", "SLN", "SFN", "SDN", "NYA", "ANA", "LAN", "KCA", "ARI", "CHA", "CHN"), c("NYM","WSH", "TB", "STL", "SF", "SD", "NYY", "LAA", "LAD", "KC", "AZ", "CWS", "CHC"))
+
+```
+
+# Merge attendance info with pitch-by-pitch data
+```{r}
+# Combine attendance proportion and groups with pitch-by-pitch data
+# Create gameid variable to act as an identifier for each individual game, so that overall game stats can be mapped to each pitch
+clean_mlb$gameid = paste(clean_mlb$date, clean_mlb$home, clean_mlb$visiting)
+at_bat_data$gameid = paste(at_bat_data$game_date, at_bat_data$home_team, at_bat_data$away_team)
+
+# Add attendance proportion to pitch-by-pitch data
+at_bat_data$attend_prop = clean_mlb$attend_prop[match(at_bat_data$gameid, clean_mlb$gameid)]
+at_bat_data = at_bat_data[!is.na(at_bat_data$attend_prop),]
+# Add attendance to pitch-by-pitch data
+at_bat_data$attendance = clean_mlb$attendance[match(at_bat_data$gameid, clean_mlb$gameid)]
+# Add attendance group to pitch-by-pitch data
+at_bat_data$attend_group = clean_mlb$attend_group[match(at_bat_data$gameid, clean_mlb$gameid)]
+# Add doubleheader (yes/no, which game if so) to pitch-by-pitch data
+at_bat_data$doubleheader = clean_mlb$doubleheader[match(at_bat_data$gameid, clean_mlb$gameid)]
+
+
+# Remove doubleheader games to avoid using the same attendance proportion for both games, for games that are missing attendance data for their first game
+at_bat_data = at_bat_data[!at_bat_data$doubleheader %in% c(1, 2),]
+# Remove 9th inning at-bats
+at_bat_data = at_bat_data[!at_bat_data$inning == "9",]
+#Verify that everything is correct - check a few at random and cross-reference with ESPN recorded attendance
+at_bat_trimmed = at_bat_data[c("game_date", "home_team", "away_team", "gameid", "doubleheader", "attendance", "attend_prop", "attend_group")] 
+sample_n(at_bat_trimmed, 5)
+```
+
+# Descriptive statistics - Histograms
+```{r}
+# Look at basic descriptive statistics for RE24 across home/away and attendance factors - Histograms
+
+# Fig 3.2
+p = ggplot(data = at_bat_data, aes(x = re24)) + geom_histogram(binwidth = 0.2)
+p + facet_wrap(~inning_topbot, ) + labs(title="Histogram of RE24 per Home/Away Team", x="RE24", y="Count")
+# Fig 3.4
+p = ggplot(data = at_bat_data, aes(x = re24)) + geom_histogram(binwidth = 0.2)
+p + facet_wrap(~attend_group) + labs(title="Histogram of RE24 per Attendance Level", x="RE24", y="Count")
+# Fig 3.6
+p = ggplot(data = at_bat_data, aes(x = re24)) + geom_histogram(binwidth = 0.2)
+p + facet_wrap(attend_group~inning_topbot) + labs(title="Histogram of RE24 per Attendance Level and Home/Away Team", x="RE24", y="Count")
+```
+# Descriptive statistics - Boxplots
+```{r}
+# Look at basic descriptive statistics for RE24 across home/away and attendance factors - Boxplots
+# Fig 3.1
+ggplot(at_bat_data, aes(x=inning_topbot, y=re24, fill=inning_topbot)) + geom_boxplot(outlier.shape = NA) + ylim(-1.5, 1.5) + labs(title="RE24 by Home Team vs. Away Team", x="Inning", y="RE24") + theme(legend.position = "none")
+# Fig 3.3
+ggplot(at_bat_data, aes(x=attend_group, y=re24, fill=attend_group)) + geom_boxplot(outlier.shape = NA) + ylim(-1.5, 1.5)  + labs(title="RE24 by Attendance Levels", x="Attendance Group", y="RE24") + theme(legend.position = "none")
+# Fig 3.5
+ggplot(at_bat_data, aes(x=attend_group, y=re24, fill=inning_topbot)) + geom_boxplot(outlier.shape = NA) + ylim(-1.5, 1.5) + labs(title="RE24 by Home Team vs. Away Team and Attendance Levels", x="Attendance Group", y="RE24", fill="Inning")
+```
+# Summary stats - Fig 3.9
+```{r}
+# Mean per home/away team
+aggregate(x = at_bat_data$re24 , by = list(at_bat_data$inning_topbot), FUN = mean) 
+# Mean per attendance level
+aggregate(x = at_bat_data$re24 , by = list(at_bat_data$attend_group), FUN = mean) 
+# Mean per home/away team and attendance level   -- Fig 3.7
+aggregate(x = at_bat_data$re24 , by = list(at_bat_data$attend_group, at_bat_data$inning_topbot), FUN = mean) 
+```
+# Descriptive stats for high-leverage scenario #1
+```{r}
+# High leverage scenario #1 : bases loaded with 2 outs
+at_bat_data_high_lev = at_bat_data[at_bat_data$outs_when_up == 2 & !is.na(at_bat_data$on_1b) & !is.na(at_bat_data$on_2b) & !is.na(at_bat_data$on_3b),]
+
+ggplot(at_bat_data_high_lev, aes(x=attend_group, y=re24, fill=inning_topbot)) + geom_boxplot() 
+# Fig 3.8
+p = ggplot(data = at_bat_data_high_lev, aes(x = re24)) + geom_histogram(binwidth = 0.5)
+p + facet_wrap(attend_group~inning_topbot)  + labs(title="Histogram of RE24, 2 Outs and Bases Loaded", x="RE24", y="Count")
+
+```
+# Descriptive stats for high-leverage scenario #2
+```{r}
+# High leverage scenario #2: 8th inning with score differential 1 or 0
+at_bat_data_high_lev_2 = at_bat_data[at_bat_data$inning == "8" & abs(at_bat_data$home_score - at_bat_data$away_score) <= 1,]
+
+ggplot(at_bat_data_high_lev_2, aes(x=attend_group, y=re24, fill=inning_topbot)) + geom_boxplot() 
+# Fig 3.9
+p = ggplot(data = at_bat_data_high_lev_2, aes(x = re24)) + geom_histogram(binwidth = 0.2)
+p + facet_wrap(attend_group~inning_topbot) + labs(title="Histogram of RE24, 9th Inning Score Differential <= 1", x="RE24", y="Count")
+```
+# Inferential stats
+```{r}
+# Run inferential stats tests
+library(rstatix)
+library(nortest)
+
+# Only need these 3 variables to run the tests
+at_bat_test = at_bat_data[c("inning_topbot", "re24", "attend_group")]
+# Tests for normality 
+shapiro.test(sample_n(at_bat_test[at_bat_test$attend_group == "high",], 4000)$re24)
+shapiro.test(sample_n(at_bat_test[at_bat_test$attend_group == "low",], 4000)$re24)
+ad.test(at_bat_test[at_bat_test$attend_group == "low",]$re24)
+ad.test(at_bat_test[at_bat_test$attend_group == "high",]$re24)
+# Test for equal variance
+var.test(at_bat_test[at_bat_test$inning_topbot=='Top',]$re24, at_bat_test[at_bat_test$inning_topbot=='Bot',]$re24)
+
+#Two-Sample Wilcoxon Test per attendance group
+stat.test <- at_bat_test %>%
+  group_by(attend_group) %>%
+  wilcox_test(re24 ~ inning_topbot) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test
+
+# One-Sample Wilcoxon Test
+wilcox.test(at_bat_test[at_bat_test$attend_group == "high" & at_bat_test$inning_topbot=='Top',]$re24, alt='l', mu=0)
+wilcox.test(at_bat_test[at_bat_test$attend_group == "high" & at_bat_test$inning_topbot=='Bot',]$re24, alt='g', mu=0)
+
+```
+# Inferential stats - high leverage scenarios
+```{r}
+# Inferential statistics for high leverage situations
+
+# High leverage scenario #1 : bases loaded with 2 outs
+# Trim dataset to high attendance and necessary variables only
+at_bat_data_high_lev = at_bat_data_high_lev[at_bat_data_high_lev$attend_group == "high",]
+at_bat_data_high_lev = at_bat_data_high_lev[c("attend_group", "re24", "inning_topbot")]
+at_bat_data_high_lev
+# High leverage scenario #2: 8th inning with score differential 1 or 0
+# Trim dataset to high attendance and necessary variables only
+at_bat_data_high_lev_2 = at_bat_data_high_lev_2[at_bat_data_high_lev_2$attend_group == "high",]
+at_bat_data_high_lev_2 = at_bat_data_high_lev_2[c("attend_group", "re24", "inning_topbot")]
+at_bat_data_high_lev_2
+
+# Tests null hypothesis that the home team has a higher RE24 than away team in respective scenario + high attendance
+wilcox_test(re24 ~ inning_topbot, data=at_bat_data_high_lev, alternative="g")
+wilcox_test(re24 ~ inning_topbot, data=at_bat_data_high_lev_2, alternative="g")
+
+```
+# Final paired-down dataset - includes Home/Away team, attendance group, and RE24 for each at-bat
+```{r}
+at_bat_test
+```
