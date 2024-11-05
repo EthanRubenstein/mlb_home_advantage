@@ -1,3 +1,5 @@
+# MLB home field advantage evaluation: attendance and batting performance
+
 This project seeks to establish whether there is a correlation between stadium attendance (by percentage, rather than raw numbers) and run expectancy based on 24 base-out states (RE24) in 2020 MLB season games.
 RE24 is a baseball statistic that predicts the number of runs that a team is expected to score in one half of an inning, given which bases have runners and the number of outs. As there are 8 possible permutations
 of runners on base, and 3 possibilities for the number of outs in each base state, there are 24 total states, hence the "24" in RE24. 
